@@ -32,9 +32,6 @@ VPN_CONFIG = {
     'servers': [
         {'name': '🇳🇱 Нидерланды', 'id': 'nl', 'ip': 'ams.server.com'},
         {'name': '🇩🇪 Германия', 'id': 'de', 'ip': 'fra.server.com'},
-        {'name': '🇺🇸 США', 'id': 'us', 'ip': 'nyc.server.com'},
-        {'name': '🇬🇧 Великобритания', 'id': 'uk', 'ip': 'lon.server.com'},
-        {'name': '🇨🇭 Швейцария', 'id': 'ch', 'ip': 'zrh.server.com'},
     ],
     'plans': [
         {'name': '1 месяц', 'duration': 30, 'price_stars': 100, 'price_usd': 2.99},
