@@ -1,0 +1,32 @@
+Тут будут написаны полезные команды, которые я наверняка могу забыть
+
+    Команды для управления ботом:
+
+# Остановка бота
+sudo systemctl stop TgBot_VPN
+
+# Перезапуск бота
+sudo systemctl restart TgBot_VPN
+
+# Просмотр последних 50 строк логов
+sudo journalctl -u TgBot_VPN -n 50
+
+# Обновление кода из GitHub
+cd /home/username/TgBot_VPN
+git pull
+sudo systemctl restart TgBot_VPN
+
+# перейти в репозиторий бота
+cd TgBot_VPN
+
+# Посмотреть логи
+sudo journalctl -u TgBot_VPN -f
+
+# Проверьте статус
+sudo systemctl status TgBot_VPN
+
+# Запуск бота
+sudo systemctl daemon-reload
+sudo systemctl enable vpn-bot
+sudo systemctl start vpn-bot
+
