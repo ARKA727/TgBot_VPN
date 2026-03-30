@@ -8,6 +8,7 @@ from typing import Optional
 from contextlib import contextmanager
 from database import Database
 from yoomoney_payment import init_yoomoney, yoomoney
+from yoomoney import Client, Quickpay
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart
@@ -22,6 +23,14 @@ import config
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Инициализация клиента ЮMoney
+yoomoney_client = None
+if YOOMONEY_TOKEN and YOOMONEY_WALLET:
+    yoomoney_client = Client(YOOMONEY_TOKEN)
+    logger.info("✅ ЮMoney клиент инициализирован")
+else:
+    logger.warning("⚠️ ЮMoney не настроен: отсутствует токен или кошелёк")
 
 # Инициализация бота
 bot = Bot(token=config.BOT_TOKEN)
