@@ -8,7 +8,6 @@ from typing import Optional
 from contextlib import contextmanager
 from database import Database
 from yoomoney_payment import init_yoomoney, yoomoney
-from yoomoney import Client, Quickpay
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart
@@ -23,14 +22,6 @@ import config
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Инициализация клиента ЮMoney
-yoomoney_client = None
-if YOOMONEY_TOKEN and YOOMONEY_WALLET:
-    yoomoney_client = Client(YOOMONEY_TOKEN)
-    logger.info("✅ ЮMoney клиент инициализирован")
-else:
-    logger.warning("⚠️ ЮMoney не настроен: отсутствует токен или кошелёк")
 
 # Инициализация бота
 bot = Bot(token=config.BOT_TOKEN)
@@ -488,31 +479,69 @@ async def check_payment(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Платеж не найден", show_alert=True)
         return
     
+    if payment['user_id'] != callback.from_user.id:
+        await callback.answer("❌ Это не ваш платёж", show_alert=True)
+        return
+    
+    if payment['status'] == 'completed':
+        await callback.answer("✅ Оплата уже подтверждена", show_alert=True)
+        return
+    
     # Проверяем статус в Юмани
     if payment['currency'] == "RUB" and yoomoney:
         status = await yoomoney.check_payment_status(payment_id)
         
-        if status['status'] == 'completed':
-            # Обновляем статус в БД
+        if not status.get('success'):
+            await callback.answer(
+                f"⚠️ Не удалось проверить оплату: {status.get('error', 'ошибка API')}",
+                show_alert=True,
+            )
+            return
+        
+        if status.get('status') == 'not_found':
+            await callback.answer(
+                "⏳ Платёж пока не найден. Оплатите по ссылке и подождите минуту.",
+                show_alert=True,
+            )
+            return
+        
+        if status.get('status') == 'pending':
+            await callback.answer("⏳ Платёж в обработке, попробуйте позже.", show_alert=True)
+            return
+        
+        if status.get('status') == 'completed':
             db.update_payment_status(payment_id, "completed")
             
-            # Генерируем конфигурацию
             config_data = generate_vpn_config(callback.from_user.id, payment['server_id'])
-            
-            # Создаем подписку
+            duration_days = next(
+                (p['duration'] for p in config.VPN_PLANS if p['name'] == payment['plan_name']),
+                30,
+            )
             db.add_subscription(
                 callback.from_user.id,
                 payment['server_id'],
                 config_data,
-                next((p['duration'] for p in config.VPN_PLANS if p['name'] == payment['plan_name']), 30)
+                duration_days,
             )
             
-            # Отправляем сообщение об успешной оплате
             await callback.message.edit_text(
-                f"""✅ Оплата подтверждена!
-
-                    🔑 Ваша конфигурация VPN:"""
+                "✅ Оплата подтверждена!\n\n"
+                "🔑 Ваша конфигурация VPN отправлена следующим сообщением."
             )
+            await callback.message.answer(
+                "🔑 Конфигурация VPN:\n"
+                f"```\n{config_data}\n```\n\n"
+                "📱 Инструкция:\n"
+                "1. Скачайте приложение Outline\n"
+                "2. Скопируйте ключ выше\n"
+                "3. Добавьте сервер в приложении",
+                parse_mode="Markdown",
+            )
+            await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard())
+            await callback.answer()
+            return
+    
+    await callback.answer("❌ ЮMoney недоступен", show_alert=True)
 
 @dp.callback_query(F.data.startswith("pay_stars_"))
 async def process_stars_payment(callback: CallbackQuery, state: FSMContext):
@@ -662,6 +691,7 @@ PersistentKeepalive = 25
 # Запуск бота
 async def main():
     logger.info("Запуск бота...")
+    init_yoomoney()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
