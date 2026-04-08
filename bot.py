@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from contextlib import contextmanager
 from database import Database
-from yoomoney_payment import init_yoomoney, yoomoney
+import yoomoney_payment
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart
@@ -405,8 +405,8 @@ async def process_yoomoney_payment(callback: CallbackQuery, state: FSMContext):
         )
         
         # Создаем платеж в Юмани
-        if yoomoney:
-            payment_result = await yoomoney.create_payment(
+        if yoomoney_payment.yoomoney:
+            payment_result = await yoomoney_payment.yoomoney.create_payment(
                 amount=price_rub,
                 description=f"VPN подписка {plan_name}",
                 payment_id=payment_id
@@ -488,8 +488,8 @@ async def check_payment(callback: CallbackQuery, state: FSMContext):
         return
     
     # Проверяем статус в Юмани
-    if payment['currency'] == "RUB" and yoomoney:
-        status = await yoomoney.check_payment_status(payment_id)
+    if payment['currency'] == "RUB" and yoomoney_payment.yoomoney:
+        status = await yoomoney_payment.yoomoney.check_payment_status(payment_id)
         
         if not status.get('success'):
             await callback.answer(
@@ -691,7 +691,7 @@ PersistentKeepalive = 25
 # Запуск бота
 async def main():
     logger.info("Запуск бота...")
-    init_yoomoney()
+    yoomoney_payment.init_yoomoney()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./.env:/app/.env
+    env_file:
+      - .env
     environment:
       - TZ=Europe/Moscow
     logging:

@@ -2,10 +2,12 @@
 
 import os
 import logging
+from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    _env_path = Path(__file__).resolve().parent / ".env"
+    load_dotenv(_env_path)
     DOTENV_LOADED = True
 except ImportError:
     DOTENV_LOADED = False

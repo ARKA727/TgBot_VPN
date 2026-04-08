@@ -81,10 +81,16 @@ def init_yoomoney():
     """Инициализация Юмани"""
     global yoomoney
     import config
-    if config.YOOMONEY_TOKEN and config.YOOMONEY_WALLET:
-        yoomoney = YooMoneyPayment(config.YOOMONEY_TOKEN, config.YOOMONEY_WALLET)
+    token = (config.YOOMONEY_TOKEN or "").strip()
+    wallet = (config.YOOMONEY_WALLET or "").strip()
+    if token and wallet:
+        yoomoney = YooMoneyPayment(token, wallet)
         logger.info("✅ Юмани инициализирован")
         return True
-    else:
-        logger.warning("⚠️ Юмани не инициализирован - не хватает данных")
-        return False
+    reasons = []
+    if not token:
+        reasons.append("YOOMONEY_TOKEN пустой")
+    if not wallet:
+        reasons.append("YOOMONEY_WALLET пустой")
+    logger.warning("⚠️ Юмани не инициализирован: %s", "; ".join(reasons) or "неизвестно")
+    return False
