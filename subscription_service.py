@@ -95,7 +95,7 @@ async def provision_after_payment(
         else:
             created = await create_client_for_server(sid, telegram_user_id, duration_days)
     except XuiApiError as e:
-        logger.exception("3x-ui: не удалось выдать/продлить клиента: %s", e)
+        logger.error("3x-ui: не удалось выдать/продлить клиента: %s", e)
         msg = (
             "⚠️ Оплата учтена, но панель VPN сейчас не выдала доступ автоматически.\n"
             f"Ошибка: {e}\n"

@@ -15,23 +15,23 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Токен бота
-BOT_TOKEN = os.getenv("BOT_TOKEN", "F9D7AAC679CB3E599AF0B75237AD19B58C4E84A7F7FFDC5EEA0BE221356E60E7")
+# Токен бота (только .env — не храните секреты в коде репозитория)
+BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 
 # Настройки базы данных
 DATABASE_NAME = os.getenv("DATABASE_NAME", "vpn_bot.db")
 
 # ID администраторов
 try:
-    admin_ids_str = os.getenv("ADMIN_IDS", "280478260")
+    admin_ids_str = (os.getenv("ADMIN_IDS") or "").strip()
     ADMIN_IDS = [int(id.strip()) for id in admin_ids_str.split(",") if id.strip()]
-except:
+except Exception:
     ADMIN_IDS = []
 
 # ========== НАСТРОЙКИ ЮМАНИ ==========
-YOOMONEY_TOKEN = os.getenv("YOOMONEY_TOKEN", "F9D7AAC679CB3E599AF0B75237AD19B58C4E84A7F7FFDC5EEA0BE221356E60E7")  # OAuth токен
-YOOMONEY_WALLET = os.getenv("YOOMONEY_WALLET", "4100119498485026")  # Номер кошелька
-YOOMONEY_REDIRECT_URL = os.getenv("YOOMONEY_REDIRECT_URL", "https://t.me/MaxkVPN_bot")  # URL для возврата
+YOOMONEY_TOKEN = (os.getenv("YOOMONEY_TOKEN") or "").strip()
+YOOMONEY_WALLET = (os.getenv("YOOMONEY_WALLET") or "").strip()
+YOOMONEY_REDIRECT_URL = (os.getenv("YOOMONEY_REDIRECT_URL") or "https://t.me/").strip()
 # ====================================
 
 # --- Этап 0 (тест): одна локация = один сервер = одна панель 3x-ui ---
@@ -45,6 +45,8 @@ SUBSCRIPTION_EXPIRE_CHECK_SECONDS = int(os.getenv("SUBSCRIPTION_EXPIRE_CHECK_SEC
 
 # HTTP к панели (этап 1 / дальше — API-клиент)
 XUI_REQUEST_TIMEOUT = int(os.getenv("XUI_REQUEST_TIMEOUT", "30"))
+# Повторы при обрыве сети к панели (0 = без повторов)
+XUI_HTTP_RETRIES = int(os.getenv("XUI_HTTP_RETRIES", "2"))
 # Для панели по IP с самоподписанным сертификатом: XUI_EE_VERIFY_SSL=false
 _XUI_EE_VERIFY_RAW = os.getenv("XUI_EE_VERIFY_SSL", "true").strip().lower()
 XUI_EE_VERIFY_SSL = _XUI_EE_VERIFY_RAW not in ("0", "false", "no", "off")
@@ -199,8 +201,8 @@ def check_config():
         logger.error("❌ BOT_TOKEN не установлен!")
         return False
     
-    logger.info(f"✅ Конфигурация проверена успешно")
-    logger.info(f"🤖 Бот токен: {BOT_TOKEN[:10]}...")
+    logger.info("✅ Конфигурация проверена успешно")
+    logger.info("🤖 BOT_TOKEN задан (%s символов), значение в лог не выводится", len(BOT_TOKEN))
     
     # Проверка Юмани
     if YOOMONEY_TOKEN:

@@ -13,6 +13,7 @@ URL: panel_base_url без завершающего «/», далее /login и 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
@@ -106,6 +107,24 @@ class XuiApiClient:
             raise XuiApiError("Сессия не открыта, используйте async with XuiApiClient(cfg)")
         return self._session
 
+    async def _http_json(self, method: str, url: str, **kwargs):
+        """HTTP с короткими повторами при обрыве соединения (этап 7)."""
+        rmax = max(0, min(5, int(getattr(config, "XUI_HTTP_RETRIES", 2))))
+        for attempt in range(rmax + 1):
+            try:
+                async with self._s.request(method, url, **kwargs) as resp:
+                    data = await _read_json(resp)
+                return resp, data
+            except (
+                aiohttp.ClientConnectorError,
+                aiohttp.ClientOSError,
+                aiohttp.ServerDisconnectedError,
+                asyncio.TimeoutError,
+            ) as e:
+                if attempt >= rmax:
+                    raise XuiApiError(f"Ошибка сети к панели: {e}") from e
+                await asyncio.sleep(0.25 * (2**attempt))
+
     async def login(self, two_factor_code: str = "") -> None:
         url = _url(self._cfg["panel_base_url"], "login")
         payload = {
@@ -113,8 +132,7 @@ class XuiApiClient:
             "password": self._cfg["password"],
             "twoFactorCode": two_factor_code or "",
         }
-        async with self._s.post(url, json=payload) as resp:
-            data = await _read_json(resp)
+        resp, data = await self._http_json("POST", url, json=payload)
         if resp.status != 200:
             raise XuiApiError(
                 f"Логин: HTTP {resp.status}",
@@ -129,8 +147,7 @@ class XuiApiClient:
         """GET /panel/api/inbounds/get/:id — проверка сессии и просмотр инбаунда."""
         iid = inbound_id if inbound_id is not None else self._cfg["inbound_id"]
         url = _url(self._cfg["panel_base_url"], "panel", "api", "inbounds", "get", str(iid))
-        async with self._s.get(url) as resp:
-            data = await _read_json(resp)
+        resp, data = await self._http_json("GET", url)
         if resp.status == 404:
             raise XuiApiError(
                 "API вернул 404 (часто: не залогинились или неверный путь к панели). "
@@ -194,8 +211,7 @@ class XuiApiClient:
         url = _url(self._cfg["panel_base_url"], "panel", "api", "inbounds", "addClient")
         payload = {"id": inbound_id, "settings": settings_str}
 
-        async with self._s.post(url, json=payload) as resp:
-            data = await _read_json(resp)
+        resp, data = await self._http_json("POST", url, json=payload)
 
         if resp.status == 404:
             raise XuiApiError(
@@ -290,8 +306,7 @@ class XuiApiClient:
         )
         payload = {"id": inbound_id, "settings": settings_str}
 
-        async with self._s.post(url, json=payload) as resp:
-            data = await _read_json(resp)
+        resp, data = await self._http_json("POST", url, json=payload)
 
         if resp.status == 404:
             raise XuiApiError("updateClient: 404 — нет сессии, клиента или неверный URL.", status=404)

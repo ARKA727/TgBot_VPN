@@ -49,7 +49,7 @@ async def startup():
         logger.error(f"❌ Ошибка инициализации БД: {e}")
         return False
     
-    logger.info(f"✅ Токен бота: {BOT_TOKEN[:10]}...")
+    logger.info("✅ Токен бота задан (%s символов)", len(BOT_TOKEN or ""))
     logger.info("✅ Бот готов к запуску")
     return True
 

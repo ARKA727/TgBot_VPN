@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import hashlib
 import config
 from datetime import datetime, timedelta
 from database import Database
@@ -390,7 +391,12 @@ async def check_payment(callback: CallbackQuery, state: FSMContext):
             return
         
         if status.get('status') == 'completed':
-            db.update_payment_status(payment_id, "completed")
+            if not db.try_complete_payment_pending(payment_id):
+                await callback.answer(
+                    "✅ Оплата уже была подтверждена ранее.",
+                    show_alert=True,
+                )
+                return
 
             duration_days = next(
                 (p['duration'] for p in config.VPN_PLANS if p['name'] == payment['plan_name']),
@@ -485,17 +491,30 @@ async def process_successful_payment(message: Message, state: FSMContext):
         await message.answer("Ошибка данных платежа. Напишите в поддержку: @MXMKGN")
         return
 
-    # Сохраняем платеж в БД
-    payment_id = f"stars_{user_id}_{datetime.now().timestamp()}"
-    db.add_payment(
+    charge_id = getattr(payment, "telegram_payment_charge_id", None) or getattr(
+        payment, "provider_payment_charge_id", None
+    )
+    if not charge_id or not str(charge_id).strip():
+        charge_id = hashlib.sha256(
+            f"{user_id}:{raw}:{payment.total_amount}".encode("utf-8", errors="replace")
+        ).hexdigest()[:48]
+        logger.warning(
+            "Stars: нет telegram_payment_charge_id, используется стабильный surrogate id"
+        )
+
+    if not db.insert_completed_stars_payment_once(
         user_id=user_id,
         amount=payment.total_amount,
-        currency="XTR",
-        payment_id=payment_id,
         plan_name=plan_name,
-        server_id=server_id
-    )
-    db.update_payment_status(payment_id, "completed")
+        server_id=server_id,
+        telegram_charge_id=str(charge_id).strip(),
+    ):
+        await message.answer(
+            "Этот платёж Telegram уже был обработан ранее.\n"
+            "Если подписки нет в «Мои подписки» — напишите @MXMKGN",
+            reply_markup=get_main_keyboard(),
+        )
+        return
 
     renew = db.get_latest_xui_subscription(user_id, server_id)
     outcome = await provision_after_payment(

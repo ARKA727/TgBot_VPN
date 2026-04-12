@@ -61,11 +61,30 @@ class Database:
                     server_id TEXT,
                     status TEXT DEFAULT 'pending',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    telegram_payment_charge_id TEXT,
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
+            self._migrate_payments(cursor)
             
             conn.commit()
+
+    @staticmethod
+    def _migrate_payments(cursor):
+        cursor.execute("PRAGMA table_info(payments)")
+        names = {row[1] for row in cursor.fetchall()}
+        if "telegram_payment_charge_id" not in names:
+            cursor.execute(
+                "ALTER TABLE payments ADD COLUMN telegram_payment_charge_id TEXT"
+            )
+        cursor.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_telegram_charge
+            ON payments(telegram_payment_charge_id)
+            WHERE telegram_payment_charge_id IS NOT NULL
+              AND TRIM(telegram_payment_charge_id) != ''
+            """
+        )
 
     @staticmethod
     def _migrate_subscriptions(cursor):
@@ -203,6 +222,59 @@ class Database:
                 UPDATE payments SET status = ? WHERE payment_id = ?
             ''', (status, payment_id))
             conn.commit()
+
+    def try_complete_payment_pending(self, payment_id: str) -> bool:
+        """
+        Атомарно: pending → completed только один раз.
+        Защита от двойной выдачи при повторном нажатии «Проверить оплату».
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE payments
+                SET status = 'completed'
+                WHERE payment_id = ? AND status = 'pending'
+                """,
+                (payment_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def insert_completed_stars_payment_once(
+        self,
+        user_id: int,
+        amount: int,
+        plan_name: str,
+        server_id: str,
+        telegram_charge_id: str,
+    ) -> bool:
+        """
+        Запись успешного Stars-платежа. False — уже есть такой telegram_charge_id
+        (повторный successful_payment).
+        """
+        cid = (telegram_charge_id or "").strip()
+        if not cid:
+            return False
+        payment_id = f"stars_{cid}"
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                self._migrate_payments(cursor)
+                cursor.execute(
+                    """
+                    INSERT INTO payments (
+                        user_id, amount, currency, payment_id, plan_name, server_id, status,
+                        telegram_payment_charge_id
+                    )
+                    VALUES (?, ?, 'XTR', ?, ?, ?, 'completed', ?)
+                    """,
+                    (user_id, amount, payment_id, plan_name, server_id, cid),
+                )
+                conn.commit()
+                return True
+        except sqlite3.IntegrityError:
+            return False
 
 def init_db():
     """Функция для инициализации БД"""
