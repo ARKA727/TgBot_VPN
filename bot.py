@@ -180,7 +180,8 @@ async def show_help(message: Message):
         "❓ Как подключить VPN?\n",
         "После оплаты бот выдаст данные подписки (VLESS через 3x-ui).\n",
         "Импортируй ссылку в v2rayNG, Hiddify, Streisand и т.п.\n\n",
-        
+        "❓ Повторная покупка на тот же сервер?\n",
+        "Срок продлевается у того же ключа (в панели 3x-ui и в «Мои подписки»).\n\n",
         "❓ Почему VPN иногда отключается в Шортсах (Youtube/insta)?\n"
         "Это связанно с Принципами работы протокла Velness. В этом нет ничего критичного. С большим кол-вом подписчиков будет добавленны новые протоколы.\n\n"
         
@@ -395,22 +396,41 @@ async def check_payment(callback: CallbackQuery, state: FSMContext):
                 (p['duration'] for p in config.VPN_PLANS if p['name'] == payment['plan_name']),
                 30,
             )
+            renew = db.get_active_xui_subscription(
+                callback.from_user.id, str(payment["server_id"])
+            )
             outcome = await provision_after_payment(
                 telegram_user_id=callback.from_user.id,
-                server_id=str(payment['server_id']),
+                server_id=str(payment["server_id"]),
                 duration_days=duration_days,
+                renew_row=renew,
             )
             if outcome.ok and outcome.config_data:
-                db.add_subscription(
-                    callback.from_user.id,
-                    payment['server_id'],
-                    outcome.config_data,
-                    duration_days,
-                    xui_client_email=outcome.xui_email,
-                    xui_client_uuid=outcome.xui_client_uuid,
-                    xui_sub_id=outcome.xui_sub_id,
-                    xui_inbound_id=outcome.xui_inbound_id,
-                )
+                if (
+                    outcome.was_renewal
+                    and outcome.subscription_db_id is not None
+                    and outcome.end_date_for_db is not None
+                ):
+                    db.update_subscription_renewal(
+                        outcome.subscription_db_id,
+                        outcome.config_data,
+                        outcome.end_date_for_db,
+                    )
+                elif not outcome.was_renewal:
+                    db.add_subscription(
+                        callback.from_user.id,
+                        payment["server_id"],
+                        outcome.config_data,
+                        duration_days,
+                        xui_client_email=outcome.xui_email,
+                        xui_client_uuid=outcome.xui_client_uuid,
+                        xui_sub_id=outcome.xui_sub_id,
+                        xui_inbound_id=outcome.xui_inbound_id,
+                    )
+                else:
+                    logger.error(
+                        "Продление без subscription_db_id/end_date, БД не обновлена"
+                    )
 
             await callback.message.edit_text(
                 "✅ Оплата подтверждена!\n\n" + outcome.user_message
@@ -477,22 +497,37 @@ async def process_successful_payment(message: Message, state: FSMContext):
     )
     db.update_payment_status(payment_id, "completed")
 
+    renew = db.get_active_xui_subscription(user_id, server_id)
     outcome = await provision_after_payment(
         telegram_user_id=user_id,
         server_id=server_id,
         duration_days=duration,
+        renew_row=renew,
     )
     if outcome.ok and outcome.config_data:
-        db.add_subscription(
-            user_id,
-            server_id,
-            outcome.config_data,
-            duration,
-            xui_client_email=outcome.xui_email,
-            xui_client_uuid=outcome.xui_client_uuid,
-            xui_sub_id=outcome.xui_sub_id,
-            xui_inbound_id=outcome.xui_inbound_id,
-        )
+        if (
+            outcome.was_renewal
+            and outcome.subscription_db_id is not None
+            and outcome.end_date_for_db is not None
+        ):
+            db.update_subscription_renewal(
+                outcome.subscription_db_id,
+                outcome.config_data,
+                outcome.end_date_for_db,
+            )
+        elif not outcome.was_renewal:
+            db.add_subscription(
+                user_id,
+                server_id,
+                outcome.config_data,
+                duration,
+                xui_client_email=outcome.xui_email,
+                xui_client_uuid=outcome.xui_client_uuid,
+                xui_sub_id=outcome.xui_sub_id,
+                xui_inbound_id=outcome.xui_inbound_id,
+            )
+        else:
+            logger.error("Продление без subscription_db_id/end_date, БД не обновлена")
 
     await message.answer("✅ Оплата прошла успешно!\n\n" + outcome.user_message)
 

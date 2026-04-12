@@ -6,10 +6,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import config
-from xui_client import XuiApiError, create_client_for_server
+from xui_client import XuiApiError, create_client_for_server, extend_client_for_server
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,9 @@ class ProvisionOutcome:
     xui_client_uuid: Optional[str] = None
     xui_sub_id: Optional[str] = None
     xui_inbound_id: Optional[int] = None
+    was_renewal: bool = False
+    subscription_db_id: Optional[int] = None
+    end_date_for_db: Optional[datetime] = None
 
 
 def _subscription_link(server_id: str, sub_id: str) -> Optional[str]:
@@ -45,15 +48,28 @@ def _expiry_human(expiry_ms: int) -> str:
         return "—"
 
 
+def _renew_row_uuid(renew_row: Any) -> Optional[str]:
+    if renew_row is None:
+        return None
+    try:
+        u = renew_row["xui_client_uuid"]
+    except (KeyError, TypeError, IndexError):
+        return None
+    if not u or not str(u).strip():
+        return None
+    return str(u).strip()
+
+
 async def provision_after_payment(
     *,
     telegram_user_id: int,
     server_id: str,
     duration_days: int,
+    renew_row: Any = None,
 ) -> ProvisionOutcome:
     """
-    Создаёт клиента в панели и формирует текст для чата и поля БД.
-    При ошибке панели оплата уже может быть помечена completed — пользователю инструкция в поддержку.
+    Создаёт клиента в панели или продлевает существующего (если передан renew_row из БД).
+    Срок продления: max(сейчас, текущий срок в панели) + купленные дни.
     """
     sid = (server_id or "").strip().lower()
     cfg = config.get_xui_panel_config(sid)
@@ -64,10 +80,21 @@ async def provision_after_payment(
         )
         return ProvisionOutcome(ok=False, user_message=msg, config_data="")
 
+    renew_uuid = _renew_row_uuid(renew_row)
+    was_renewal = False
+    sub_db_id: Optional[int] = None
     try:
-        created = await create_client_for_server(sid, telegram_user_id, duration_days)
+        if renew_uuid:
+            was_renewal = True
+            try:
+                sub_db_id = int(renew_row["id"])
+            except (KeyError, TypeError, ValueError):
+                sub_db_id = None
+            created = await extend_client_for_server(sid, renew_uuid, duration_days)
+        else:
+            created = await create_client_for_server(sid, telegram_user_id, duration_days)
     except XuiApiError as e:
-        logger.exception("3x-ui: не удалось создать клиента: %s", e)
+        logger.exception("3x-ui: не удалось выдать/продлить клиента: %s", e)
         msg = (
             "⚠️ Оплата учтена, но панель VPN сейчас не выдала доступ автоматически.\n"
             f"Ошибка: {e}\n"
@@ -77,9 +104,11 @@ async def provision_after_payment(
 
     sub_url = _subscription_link(sid, created.sub_id)
     until = _expiry_human(created.expiry_time_ms)
+    end_dt = datetime.fromtimestamp(created.expiry_time_ms / 1000.0)
 
+    head = "✅ Подписка продлена." if was_renewal else "✅ Подписка активирована."
     lines = [
-        "✅ Подписка активирована.",
+        head,
         "",
         f"Локация: {sid.upper()}",
         f"Действует примерно до: {until}",
@@ -112,4 +141,7 @@ async def provision_after_payment(
         xui_client_uuid=created.client_uuid,
         xui_sub_id=created.sub_id,
         xui_inbound_id=created.inbound_id,
+        was_renewal=was_renewal,
+        subscription_db_id=sub_db_id if was_renewal else None,
+        end_date_for_db=end_dt if was_renewal else None,
     )

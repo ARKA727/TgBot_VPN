@@ -216,6 +216,103 @@ class XuiApiClient:
             inbound_id=inbound_id,
         )
 
+    async def extend_inbound_client(
+        self,
+        *,
+        client_uuid: str,
+        duration_days: int,
+    ) -> CreatedInboundClient:
+        """
+        POST /panel/api/inbounds/updateClient/{clientUuid}
+        Продлевает срок: max(сейчас, текущий expiry) + duration (как типичное продление).
+        """
+        inbound_id = self._cfg["inbound_id"]
+        inbound = await self.get_inbound(inbound_id)
+        settings_raw = inbound.get("settings")
+        if not settings_raw or not isinstance(settings_raw, str):
+            raise XuiApiError("Инбаунд без settings")
+        try:
+            root = json.loads(settings_raw)
+        except json.JSONDecodeError as e:
+            raise XuiApiError(f"Не удалось разобрать settings инбаунда: {e}") from e
+
+        clients = root.get("clients")
+        if not isinstance(clients, list):
+            raise XuiApiError("В settings нет clients")
+
+        found: Optional[dict[str, Any]] = None
+        for c in clients:
+            if not isinstance(c, dict):
+                continue
+            if str(c.get("id", "")) == str(client_uuid):
+                found = dict(c)
+                break
+
+        if not found:
+            raise XuiApiError(f"Клиент с UUID {client_uuid!r} не найден в инбаунде")
+
+        email = str(found.get("email") or "")
+        sub_id = str(found.get("subId") or found.get("sub_id") or "")
+
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        raw_exp = found.get("expiryTime")
+        try:
+            old_ms = int(raw_exp) if raw_exp is not None else 0
+        except (TypeError, ValueError):
+            old_ms = 0
+        if old_ms <= 0:
+            base_ms = now_ms
+        else:
+            base_ms = max(now_ms, old_ms)
+        new_expiry_ms = base_ms + int(max(1, int(duration_days))) * 86400 * 1000
+
+        flow = found.get("flow", "")
+        if self._cfg["server_id"] == "ee" and not (flow or "").strip():
+            flow = config.XUI_EE_VLESS_FLOW
+
+        updated: dict[str, Any] = {
+            **found,
+            "id": str(found.get("id", client_uuid)),
+            "email": email,
+            "expiryTime": new_expiry_ms,
+            "enable": True,
+            "flow": flow or "",
+        }
+
+        settings_str = json.dumps({"clients": [updated]}, separators=(",", ":"))
+        url = _url(
+            self._cfg["panel_base_url"],
+            "panel",
+            "api",
+            "inbounds",
+            "updateClient",
+            str(client_uuid),
+        )
+        payload = {"id": inbound_id, "settings": settings_str}
+
+        async with self._s.post(url, json=payload) as resp:
+            data = await _read_json(resp)
+
+        if resp.status == 404:
+            raise XuiApiError("updateClient: 404 — нет сессии, клиента или неверный URL.", status=404)
+        if resp.status != 200:
+            raise XuiApiError(
+                f"updateClient: HTTP {resp.status}",
+                status=resp.status,
+                body=str(data)[:500],
+            )
+        if not isinstance(data, dict) or not data.get("success"):
+            msg = (data or {}).get("msg") if isinstance(data, dict) else str(data)
+            raise XuiApiError(f"updateClient: {msg or 'unknown'}")
+
+        return CreatedInboundClient(
+            email=email,
+            client_uuid=str(client_uuid),
+            sub_id=sub_id,
+            expiry_time_ms=new_expiry_ms,
+            inbound_id=inbound_id,
+        )
+
 
 async def create_client_for_server(
     server_id: str,
@@ -238,6 +335,25 @@ async def create_client_for_server(
             telegram_user_id=telegram_user_id,
             duration_days=duration_days,
             email=email,
+        )
+
+
+async def extend_client_for_server(
+    server_id: str,
+    client_uuid: str,
+    duration_days: int,
+) -> CreatedInboundClient:
+    """Продлить существующего клиента по UUID (как в панели updateClient)."""
+    cfg = get_xui_panel_config(server_id)
+    if not cfg:
+        raise XuiApiError(
+            f"Нет конфигурации 3x-ui для server_id={server_id!r} "
+            "(URL, inbound id, логин/пароль в .env).",
+        )
+    async with XuiApiClient(cfg) as api:
+        return await api.extend_inbound_client(
+            client_uuid=client_uuid,
+            duration_days=duration_days,
         )
 
 

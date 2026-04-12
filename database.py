@@ -98,6 +98,38 @@ class Database:
             ''', (user_id,))
             return cursor.fetchall()
 
+    def get_active_xui_subscription(self, user_id, server_id):
+        """Последняя активная подписка с клиентом 3x-ui на этом сервере (для продления)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM subscriptions
+                WHERE user_id = ? AND LOWER(server_id) = LOWER(?)
+                  AND is_active = 1
+                  AND end_date > CURRENT_TIMESTAMP
+                  AND xui_client_uuid IS NOT NULL AND TRIM(xui_client_uuid) != ''
+                ORDER BY end_date DESC
+                LIMIT 1
+                """,
+                (user_id, server_id),
+            )
+            return cursor.fetchone()
+
+    def update_subscription_renewal(self, subscription_id, config_data, end_date):
+        """Обновить текст и дату окончания после продления в панели."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE subscriptions
+                SET config_data = ?, end_date = ?
+                WHERE id = ?
+                """,
+                (config_data, end_date, subscription_id),
+            )
+            conn.commit()
+
     def add_subscription(
         self,
         user_id,
