@@ -1,8 +1,16 @@
 # yoomoney_payment.py
+import json
 import logging
-from yoomoney import AsyncClient, Quickpay
+from typing import Any
+
+import httpx
+from yoomoney import Quickpay
+from yoomoney._parsers import build_history_payload, parse_history
+from yoomoney.exceptions import YooMoneyError
 
 logger = logging.getLogger(__name__)
+
+YOOMONEY_API_HISTORY = "https://yoomoney.ru/api/operation-history"
 
 
 def _match_labeled_operation(
@@ -35,48 +43,88 @@ class YooMoneyPayment:
     def __init__(self, token: str, wallet: str):
         self.token = token
         self.wallet = wallet
-        self._client = AsyncClient(token)
-    
+
+    async def _post_operation_history(self, **history_kwargs: Any):
+        """
+        Запрос operation-history с явным разбором JSON.
+        Библиотечный AsyncTransport иногда отдаёт в parse_history не dict (например пустая строка),
+        из‑за чего падает Pydantic на History.
+        """
+        payload = build_history_payload(**history_kwargs)
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"Bearer {self.token}",
+        }
+        timeout = httpx.Timeout(20.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                YOOMONEY_API_HISTORY,
+                data=payload or {},
+                headers=headers,
+            )
+        raw = (resp.text or "").strip()
+        if not raw:
+            raise RuntimeError(
+                f"Пустой ответ operation-history (HTTP {resp.status_code}). "
+                "Проверьте токен и право operation-history."
+            )
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"operation-history: не JSON (HTTP {resp.status_code}): {raw[:400]!r}"
+            ) from e
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"operation-history: ожидался JSON-объект, получено {type(data).__name__}: {data!r}"
+            )
+        try:
+            return parse_history(data)
+        except YooMoneyError:
+            raise
+        except Exception as e:
+            raise RuntimeError(
+                f"Не удалось разобрать ответ ЮMoney (HTTP {resp.status_code}): {e}"
+            ) from e
+
     async def create_payment(self, amount: int, description: str, payment_id: str) -> dict:
         """Создает платеж через Юмани"""
         try:
-            # Создаем быстрый платеж
             quickpay = Quickpay(
                 receiver=self.wallet,
                 quickpay_form="shop",
                 targets=description,
                 paymentType="SB",
                 sum=amount,
-                label=payment_id
+                label=payment_id,
             )
-            
+
             payment_url = quickpay.redirected_url
-            
+
             return {
-                'success': True,
-                'payment_url': payment_url,
-                'payment_id': payment_id
+                "success": True,
+                "payment_url": payment_url,
+                "payment_id": payment_id,
             }
-            
+
         except Exception as e:
-            logger.error(f"Ошибка создания платежа Юмани: {e}")
+            logger.error("Ошибка создания платежа Юмани: %s", e)
             return {
-                'success': False,
-                'error': str(e)
+                "success": False,
+                "error": str(e),
             }
-    
+
     async def check_payment_status(
         self, payment_id: str, *, expected_amount: int | None = None
     ) -> dict:
         """Проверяет статус входящего платежа по label (Quickpay)."""
         label = (payment_id or "").strip()
         try:
-            # Сначала только входящие; при пустом ответе — без фильтра type (разные сценарии Quickpay).
             for kwargs in (
-                {"label": label, "type": "deposition", "records": 50, "details": True},
-                {"label": label, "records": 50, "details": True},
+                {"label": label, "type": "deposition", "records": 50},
+                {"label": label, "records": 50},
             ):
-                history = await self._client.operation_history(**kwargs)
+                history = await self._post_operation_history(**kwargs)
                 matched = _match_labeled_operation(
                     history.operations, label, expected_amount
                 )
@@ -97,13 +145,16 @@ class YooMoneyPayment:
                 "error": str(e),
             }
 
+
 # Глобальный экземпляр
 yoomoney = None
+
 
 def init_yoomoney():
     """Инициализация Юмани"""
     global yoomoney
     import config
+
     token = (config.YOOMONEY_TOKEN or "").strip()
     wallet = (config.YOOMONEY_WALLET or "").strip()
     if token and wallet:
