@@ -33,28 +33,22 @@ YOOMONEY_WALLET = os.getenv("YOOMONEY_WALLET", "4100119498485026")  # Номер
 YOOMONEY_REDIRECT_URL = os.getenv("YOOMONEY_REDIRECT_URL", "https://t.me/MaxkVPN_bot")  # URL для возврата
 # ====================================
 
-# Настройки VPN серверов
+# --- Этап 0 (тест): одна локация = один сервер = одна панель 3x-ui ---
+# Публичный хост VLESS (домен в инбаунде / сертификате) — подставьте свой.
+_EE_VPN_HOST = os.getenv("EE_VPN_ENDPOINT_HOST", "replace-with-your-vless-host.example.com")
+_XUI_EE_INBOUND_RAW = os.getenv("XUI_EE_INBOUND_ID", "").strip()
+_XUI_EE_INBOUND_ID = int(_XUI_EE_INBOUND_RAW) if _XUI_EE_INBOUND_RAW.isdigit() else None
+
 VPN_SERVERS = [
     {
-        'name': '🇳🇱 Нидерланды',
-        'id': 'nl',
-        'ip': 'ams.vpn-server.com',
-        'location': 'Amsterdam',
-        'flag': '🇳🇱'
-    },
-    {
-        'name': '🇩🇪 Германия',
-        'id': 'de',
-        'ip': 'fra.vpn-server.com',
-        'location': 'Frankfurt',
-        'flag': '🇩🇪'
-    },
-    {
-        'name': '🇺🇸 США',
-        'id': 'us',
-        'ip': 'nyc.vpn-server.com',
-        'location': 'New York',
-        'flag': '🇺🇸'
+        "name": "🇪🇪 Эстония",
+        "id": "ee",
+        "ip": _EE_VPN_HOST,
+        "location": "Tallinn",
+        "flag": "🇪🇪",
+        # Базовый URL веб-панели 3x-ui (https://host:port/path без финального /)
+        "panel_base_url": os.getenv("XUI_EE_PANEL_BASE_URL", "").rstrip("/"),
+        "inbound_id": _XUI_EE_INBOUND_ID,
     },
 ]
 

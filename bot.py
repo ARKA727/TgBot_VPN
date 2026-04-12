@@ -27,18 +27,12 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Конфигурация VPN
+# Конфигурация VPN: серверы и тарифы из config (этап 0 — одна панель на EE)
 VPN_CONFIG = {
-    'servers': [
-        {'name': '🇳🇱 Нидерланды', 'id': 'nl', 'ip': 'ams.server.com'},
-        {'name': '🇩🇪 Германия', 'id': 'de', 'ip': 'fra.server.com'},
+    "servers": [
+        {"name": s["name"], "id": s["id"], "ip": s["ip"]} for s in config.VPN_SERVERS
     ],
-    'plans': [
-        {'name': '1 месяц', 'duration': 30, 'price_stars': 100, 'price_usd': 2.99},
-        {'name': '3 месяца', 'duration': 90, 'price_stars': 250, 'price_usd': 7.99},
-        {'name': '6 месяцев', 'duration': 180, 'price_stars': 450, 'price_usd': 14.99},
-        {'name': '12 месяцев', 'duration': 365, 'price_stars': 800, 'price_usd': 24.99},
-    ]
+    "plans": config.VPN_PLANS,
 }
 
 # Состояния для FSM
