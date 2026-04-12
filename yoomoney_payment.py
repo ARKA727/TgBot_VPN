@@ -55,6 +55,28 @@ def _sync_wallet_post(method: str, token: str, payload: dict[str, Any]) -> str:
         return (resp.read() or b"").decode("utf-8", errors="replace").strip()
 
 
+def _raise_wallet_http_error(method: str, status: int, body: str) -> None:
+    """Ответ Wallet API с кодом ≥400 — сразу понятная ошибка (без разбора JSON)."""
+    snippet = (body or "").strip()[:400]
+    if status == 401:
+        raise RuntimeError(
+            "HTTP 401 от ЮMoney: токен не принят (неверный, истёк или отозван) либо у приложения "
+            "нет права «operation-history» (просмотр истории операций кошелька). "
+            "Ссылку Quickpay можно строить без токена, а проверка оплаты ходит в API только с "
+            "валидным access_token.\n\n"
+            "Что сделать: https://yoomoney.ru/myservices — создать или открыть приложение, "
+            "заново пройти авторизацию OAuth и при выдаче прав отметить просмотр истории операций, "
+            "скопировать новый токен в переменную YOOMONEY_TOKEN в .env (одной строкой, без кавычек и пробелов по краям)."
+        )
+    if status == 403:
+        raise RuntimeError(
+            f"HTTP 403 от ЮMoney на {method}: доступ запрещён. Проверьте права приложения и токен."
+        )
+    raise RuntimeError(
+        f"{method}: HTTP {status} от ЮMoney. Фрагмент ответа: {snippet!r}"
+    )
+
+
 def _loads_wallet_json(raw: str, *, method: str, http_status: int | None) -> dict[str, Any]:
     if not raw:
         raise RuntimeError(
@@ -146,6 +168,9 @@ class YooMoneyPayment:
         except httpx.HTTPError as e:
             logger.warning("httpx operation-history: %s", e)
 
+        if http_status is not None and http_status >= 400:
+            _raise_wallet_http_error("operation-history", http_status, raw)
+
         parsed_dict: dict[str, Any] | None = None
         if raw:
             try:
@@ -172,9 +197,7 @@ class YooMoneyPayment:
                     body = (e.read() or b"").decode("utf-8", errors="replace").strip()
                 except Exception:
                     pass
-                raise RuntimeError(
-                    f"operation-history: HTTP {e.code} от ЮMoney. Тело: {body[:500]!r}"
-                ) from e
+                _raise_wallet_http_error("operation-history", int(e.code), body)
             except urllib.error.URLError as e:
                 raise RuntimeError(
                     f"operation-history: сеть/SSL при обращении к ЮMoney: {e}"
