@@ -1,13 +1,10 @@
 import logging
-import sqlite3
 import asyncio
 import config
-import asyncio
 from datetime import datetime, timedelta
-from typing import Optional
-from contextlib import contextmanager
 from database import Database
 import yoomoney_payment
+from subscription_service import provision_after_payment
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart
@@ -17,7 +14,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.utils.formatting import Text, Bold
-import config
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -42,117 +38,6 @@ class VPNStates(StatesGroup):
     waiting_for_payment = State()
     waiting_for_config = State()
 
-# Класс для работы с БД
-class Database:
-    def __init__(self, db_name='vpn_bot.db'):
-        self.db_name = db_name
-        self.init_db()
-
-    @contextmanager
-    def get_connection(self):
-        conn = sqlite3.connect(self.db_name)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-        finally:
-            conn.close()
-
-    def init_db(self):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Таблица пользователей
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    last_name TEXT,
-                    language TEXT DEFAULT 'ru',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Таблица подписок
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS subscriptions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    server_id TEXT,
-                    config_data TEXT,
-                    start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    end_date TIMESTAMP,
-                    is_active BOOLEAN DEFAULT 1,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
-                )
-            ''')
-            
-            # Таблица платежей
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS payments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    amount INTEGER,
-                    currency TEXT,
-                    payment_id TEXT,
-                    plan_name TEXT,
-                    server_id TEXT,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
-                )
-            ''')
-            
-            conn.commit()
-
-    def add_user(self, user_id, username, first_name, last_name):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR IGNORE INTO users (user_id, username, first_name, last_name)
-                VALUES (?, ?, ?, ?)
-            ''', (user_id, username, first_name, last_name))
-            conn.commit()
-
-    def get_user_subscriptions(self, user_id):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT * FROM subscriptions 
-                WHERE user_id = ? AND is_active = 1 AND end_date > CURRENT_TIMESTAMP
-            ''', (user_id,))
-            return cursor.fetchall()
-
-    def add_subscription(self, user_id, server_id, config_data, duration_days):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            end_date = datetime.now() + timedelta(days=duration_days)
-            cursor.execute('''
-                INSERT INTO subscriptions (user_id, server_id, config_data, end_date)
-                VALUES (?, ?, ?, ?)
-            ''', (user_id, server_id, config_data, end_date))
-            conn.commit()
-            return cursor.lastrowid
-
-    def add_payment(self, user_id, amount, currency, payment_id, plan_name, server_id):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO payments (user_id, amount, currency, payment_id, plan_name, server_id, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'pending')
-            ''', (user_id, amount, currency, payment_id, plan_name, server_id))
-            conn.commit()
-            return cursor.lastrowid
-
-    def update_payment_status(self, payment_id, status):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE payments SET status = ? WHERE payment_id = ?
-            ''', (status, payment_id))
-            conn.commit()
-
-# Инициализация БД
 db = Database()
 
 # Клавиатуры
@@ -293,8 +178,8 @@ async def show_help(message: Message):
         "Telegram автоматически обработает платеж через Stars.\n\n",
         
         "❓ Как подключить VPN?\n",
-        "После оплаты ты получишь конфигурационный файл.\n",
-        "Используй приложение Outline или любой WireGuard клиент.\n\n",
+        "После оплаты бот выдаст данные подписки (VLESS через 3x-ui).\n",
+        "Импортируй ссылку в v2rayNG, Hiddify, Streisand и т.п.\n\n",
         
         "❓ Почему VPN иногда отключается в Шортсах (Youtube/insta)?\n"
         "Это связанно с Принципами работы протокла Velness. В этом нет ничего критичного. С большим кол-вом подписчиков будет добавленны новые протоколы.\n\n"
@@ -505,31 +390,30 @@ async def check_payment(callback: CallbackQuery, state: FSMContext):
         
         if status.get('status') == 'completed':
             db.update_payment_status(payment_id, "completed")
-            
-            config_data = generate_vpn_config(callback.from_user.id, payment['server_id'])
+
             duration_days = next(
                 (p['duration'] for p in config.VPN_PLANS if p['name'] == payment['plan_name']),
                 30,
             )
-            db.add_subscription(
-                callback.from_user.id,
-                payment['server_id'],
-                config_data,
-                duration_days,
+            outcome = await provision_after_payment(
+                telegram_user_id=callback.from_user.id,
+                server_id=str(payment['server_id']),
+                duration_days=duration_days,
             )
-            
+            if outcome.ok and outcome.config_data:
+                db.add_subscription(
+                    callback.from_user.id,
+                    payment['server_id'],
+                    outcome.config_data,
+                    duration_days,
+                    xui_client_email=outcome.xui_email,
+                    xui_client_uuid=outcome.xui_client_uuid,
+                    xui_sub_id=outcome.xui_sub_id,
+                    xui_inbound_id=outcome.xui_inbound_id,
+                )
+
             await callback.message.edit_text(
-                "✅ Оплата подтверждена!\n\n"
-                "🔑 Ваша конфигурация VPN отправлена следующим сообщением."
-            )
-            await callback.message.answer(
-                "🔑 Конфигурация VPN:\n"
-                f"```\n{config_data}\n```\n\n"
-                "📱 Инструкция:\n"
-                "1. Скачайте приложение Outline\n"
-                "2. Скопируйте ключ выше\n"
-                "3. Добавьте сервер в приложении",
-                parse_mode="Markdown",
+                "✅ Оплата подтверждена!\n\n" + outcome.user_message
             )
             await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard())
             await callback.answer()
@@ -567,13 +451,20 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
 async def process_successful_payment(message: Message, state: FSMContext):
     payment = message.successful_payment
     user_id = message.from_user.id
-    
-    # Парсим payload
-    payload_parts = payment.invoice_payload.split("_")
-    server_id = payload_parts[1]
-    duration = int(payload_parts[2])
-    plan_name = payload_parts[3]
-    
+
+    raw = payment.invoice_payload or ""
+    if not raw.startswith("vpn_"):
+        logger.error("Неожиданный invoice_payload: %s", raw)
+        await message.answer("Ошибка данных платежа. Напишите в поддержку: @MXMKGN")
+        return
+    try:
+        _, server_id, duration_str, plan_name = raw.split("_", 3)
+        duration = int(duration_str)
+    except (ValueError, IndexError):
+        logger.exception("Не удалось разобрать payload: %s", raw)
+        await message.answer("Ошибка данных платежа. Напишите в поддержку: @MXMKGN")
+        return
+
     # Сохраняем платеж в БД
     payment_id = f"stars_{user_id}_{datetime.now().timestamp()}"
     db.add_payment(
@@ -585,26 +476,26 @@ async def process_successful_payment(message: Message, state: FSMContext):
         server_id=server_id
     )
     db.update_payment_status(payment_id, "completed")
-    
-    # Генерируем конфигурацию (здесь должна быть интеграция с вашей VPN-панелью)
-    config_data = generate_vpn_config(user_id, server_id)
-    
-    # Создаем подписку
-    db.add_subscription(user_id, server_id, config_data, duration)
-    
-    # Отправляем конфигурацию пользователю
-    await message.answer(
-        "✅ Оплата прошла успешно!\n\n"
-        "🔑 Ваша конфигурация VPN:\n"
-        f"```\n{config_data}\n```\n\n"
-        "📱 Инструкция по подключению:\n"
-        "1. Скачайте приложение Outline\n"
-        "2. Скопируйте ключ выше\n"
-        "3. Добавьте сервер в приложении",
-        parse_mode="Markdown"
+
+    outcome = await provision_after_payment(
+        telegram_user_id=user_id,
+        server_id=server_id,
+        duration_days=duration,
     )
-    
-    # Возвращаем в главное меню
+    if outcome.ok and outcome.config_data:
+        db.add_subscription(
+            user_id,
+            server_id,
+            outcome.config_data,
+            duration,
+            xui_client_email=outcome.xui_email,
+            xui_client_uuid=outcome.xui_client_uuid,
+            xui_sub_id=outcome.xui_sub_id,
+            xui_inbound_id=outcome.xui_inbound_id,
+        )
+
+    await message.answer("✅ Оплата прошла успешно!\n\n" + outcome.user_message)
+
     await message.answer(
         "Выберите действие:",
         reply_markup=get_main_keyboard()
@@ -624,8 +515,8 @@ async def get_config(callback: CallbackQuery):
     
     if result:
         await callback.message.answer(
-            f"🔑 Ваша конфигурация:\n```\n{result['config_data']}\n```",
-            parse_mode="Markdown"
+            "🔑 Ваши данные подписки:\n\n" + str(result["config_data"]),
+            disable_web_page_preview=True,
         )
     else:
         await callback.message.answer("❌ Конфигурация не найдена")
@@ -657,30 +548,6 @@ async def back_to_plans(callback: CallbackQuery):
         reply_markup=get_plan_keyboard(server_id)
     )
     await callback.answer()
-
-# Вспомогательная функция для генерации конфигурации VPN
-def generate_vpn_config(user_id: int, server_id: str) -> str:
-    """Генерация конфигурации WireGuard/Outline"""
-    # Здесь должна быть реальная генерация ключей через вашу VPN-панель
-    # Это пример для демонстрации
-    
-    server = next((s for s in VPN_CONFIG['servers'] if s['id'] == server_id), None)
-    if not server:
-        server = VPN_CONFIG['servers'][0]
-    
-    # Пример конфигурации WireGuard
-    config = f"""[Interface]
-PrivateKey = <приватный_ключ_клиента>
-Address = 10.0.0.{user_id % 255}/24
-DNS = 1.1.1.1, 8.8.8.8
-
-[Peer]
-PublicKey = <публичный_ключ_сервера>
-Endpoint = {server['ip']}:51820
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
-"""
-    return config
 
 # Запуск бота
 async def main():

@@ -47,6 +47,8 @@ _XUI_EE_VERIFY_RAW = os.getenv("XUI_EE_VERIFY_SSL", "true").strip().lower()
 XUI_EE_VERIFY_SSL = _XUI_EE_VERIFY_RAW not in ("0", "false", "no", "off")
 # Flow для клиента VLESS (например xtls-rprx-vision для Reality+XTLS). Пусто — по умолчанию Xray.
 XUI_EE_VLESS_FLOW = os.getenv("XUI_EE_VLESS_FLOW", "").strip()
+# Шаблон ссылки подписки для клиента; подставьте {sub_id} (как в URI subscription в 3x-ui).
+XUI_EE_SUBSCRIPTION_URL_TEMPLATE = os.getenv("XUI_EE_SUBSCRIPTION_URL_TEMPLATE", "").strip()
 
 
 class XuiPanelConfig(TypedDict):

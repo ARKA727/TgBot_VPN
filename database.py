@@ -47,6 +47,7 @@ class Database:
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             ''')
+            self._migrate_subscriptions(cursor)
             
             # Таблица платежей
             cursor.execute('''
@@ -66,6 +67,19 @@ class Database:
             
             conn.commit()
 
+    @staticmethod
+    def _migrate_subscriptions(cursor):
+        cursor.execute("PRAGMA table_info(subscriptions)")
+        names = {row[1] for row in cursor.fetchall()}
+        if "xui_client_email" not in names:
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN xui_client_email TEXT")
+        if "xui_client_uuid" not in names:
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN xui_client_uuid TEXT")
+        if "xui_sub_id" not in names:
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN xui_sub_id TEXT")
+        if "xui_inbound_id" not in names:
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN xui_inbound_id INTEGER")
+
     def add_user(self, user_id, username, first_name, last_name):
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -84,14 +98,40 @@ class Database:
             ''', (user_id,))
             return cursor.fetchall()
 
-    def add_subscription(self, user_id, server_id, config_data, duration_days):
+    def add_subscription(
+        self,
+        user_id,
+        server_id,
+        config_data,
+        duration_days,
+        *,
+        xui_client_email=None,
+        xui_client_uuid=None,
+        xui_sub_id=None,
+        xui_inbound_id=None,
+    ):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             end_date = datetime.now() + timedelta(days=duration_days)
-            cursor.execute('''
-                INSERT INTO subscriptions (user_id, server_id, config_data, end_date)
-                VALUES (?, ?, ?, ?)
-            ''', (user_id, server_id, config_data, end_date))
+            cursor.execute(
+                """
+                INSERT INTO subscriptions (
+                    user_id, server_id, config_data, end_date,
+                    xui_client_email, xui_client_uuid, xui_sub_id, xui_inbound_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    server_id,
+                    config_data,
+                    end_date,
+                    xui_client_email,
+                    xui_client_uuid,
+                    xui_sub_id,
+                    xui_inbound_id,
+                ),
+            )
             conn.commit()
             return cursor.lastrowid
 
