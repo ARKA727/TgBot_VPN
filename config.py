@@ -45,6 +45,8 @@ XUI_REQUEST_TIMEOUT = int(os.getenv("XUI_REQUEST_TIMEOUT", "30"))
 # Для панели по IP с самоподписанным сертификатом: XUI_EE_VERIFY_SSL=false
 _XUI_EE_VERIFY_RAW = os.getenv("XUI_EE_VERIFY_SSL", "true").strip().lower()
 XUI_EE_VERIFY_SSL = _XUI_EE_VERIFY_RAW not in ("0", "false", "no", "off")
+# Flow для клиента VLESS (например xtls-rprx-vision для Reality+XTLS). Пусто — по умолчанию Xray.
+XUI_EE_VLESS_FLOW = os.getenv("XUI_EE_VLESS_FLOW", "").strip()
 
 
 class XuiPanelConfig(TypedDict):
