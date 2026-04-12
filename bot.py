@@ -345,107 +345,125 @@ async def process_yoomoney_payment(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("check_payment_"))
 async def check_payment(callback: CallbackQuery, state: FSMContext):
     """Проверка статуса оплаты"""
-    payment_id = callback.data.replace("check_payment_", "")
-    
-    # Получаем данные платежа из БД
+    payment_id = callback.data.removeprefix("check_payment_")
+
     with db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT * FROM payments WHERE payment_id = ?",
-            (payment_id,)
+            (payment_id,),
         )
         payment = cursor.fetchone()
-    
+
     if not payment:
         await callback.answer("❌ Платеж не найден", show_alert=True)
         return
-    
-    if payment['user_id'] != callback.from_user.id:
+
+    if payment["user_id"] != callback.from_user.id:
         await callback.answer("❌ Это не ваш платёж", show_alert=True)
         return
-    
-    if payment['status'] == 'completed':
+
+    if payment["status"] == "completed":
         await callback.answer("✅ Оплата уже подтверждена", show_alert=True)
         return
-    
-    # Проверяем статус в Юмани
-    if payment['currency'] == "RUB" and yoomoney_payment.yoomoney:
-        status = await yoomoney_payment.yoomoney.check_payment_status(payment_id)
-        
-        if not status.get('success'):
-            await callback.answer(
-                f"⚠️ Не удалось проверить оплату: {status.get('error', 'ошибка API')}",
-                show_alert=True,
+
+    if payment["currency"] != "RUB" or not yoomoney_payment.yoomoney:
+        await callback.answer("❌ ЮMoney недоступен", show_alert=True)
+        return
+
+    # Сразу снимаем «часики» в Telegram; дальше — ЮMoney и панель (могут занять время).
+    await callback.answer()
+
+    try:
+        status = await yoomoney_payment.yoomoney.check_payment_status(
+            payment_id, expected_amount=int(payment["amount"])
+        )
+
+        if not status.get("success"):
+            await callback.message.answer(
+                "⚠️ Не удалось проверить оплату в ЮMoney: "
+                f"{status.get('error', 'ошибка API')}"
             )
             return
-        
-        if status.get('status') == 'not_found':
-            await callback.answer(
-                "⏳ Платёж пока не найден. Оплатите по ссылке и подождите минуту.",
-                show_alert=True,
+
+        st = status.get("status")
+        if st == "not_found":
+            await callback.message.answer(
+                "⏳ Платёж пока не виден в кошельке. Убедитесь, что оплатили по ссылке из "
+                "этого сообщения, подождите до минуты и снова нажмите «Проверить оплату»."
             )
             return
-        
-        if status.get('status') == 'pending':
-            await callback.answer("⏳ Платёж в обработке, попробуйте позже.", show_alert=True)
+
+        if st == "pending":
+            await callback.message.answer(
+                "⏳ Платёж в обработке у ЮMoney. Подождите немного и снова нажмите "
+                "«Проверить оплату»."
+            )
             return
-        
-        if status.get('status') == 'completed':
-            if not db.try_complete_payment_pending(payment_id):
-                await callback.answer(
-                    "✅ Оплата уже была подтверждена ранее.",
-                    show_alert=True,
+
+        if st != "completed":
+            await callback.message.answer(
+                f"⚠️ Неожиданный ответ ЮMoney (статус: {st!r}). Напишите в поддержку: @MXMKGN"
+            )
+            return
+
+        if not db.try_complete_payment_pending(payment_id):
+            await callback.message.answer("✅ Оплата уже была подтверждена ранее.")
+            return
+
+        duration_days = next(
+            (p["duration"] for p in config.VPN_PLANS if p["name"] == payment["plan_name"]),
+            30,
+        )
+        renew = db.get_latest_xui_subscription(
+            callback.from_user.id, str(payment["server_id"])
+        )
+        outcome = await provision_after_payment(
+            telegram_user_id=callback.from_user.id,
+            server_id=str(payment["server_id"]),
+            duration_days=duration_days,
+            renew_row=renew,
+        )
+        if outcome.ok and outcome.config_data:
+            if (
+                outcome.was_renewal
+                and outcome.subscription_db_id is not None
+                and outcome.end_date_for_db is not None
+            ):
+                db.update_subscription_renewal(
+                    outcome.subscription_db_id,
+                    outcome.config_data,
+                    outcome.end_date_for_db,
                 )
-                return
+            elif not outcome.was_renewal:
+                db.add_subscription(
+                    callback.from_user.id,
+                    payment["server_id"],
+                    outcome.config_data,
+                    duration_days,
+                    xui_client_email=outcome.xui_email,
+                    xui_client_uuid=outcome.xui_client_uuid,
+                    xui_sub_id=outcome.xui_sub_id,
+                    xui_inbound_id=outcome.xui_inbound_id,
+                )
+            else:
+                logger.error(
+                    "Продление без subscription_db_id/end_date, БД не обновлена"
+                )
 
-            duration_days = next(
-                (p['duration'] for p in config.VPN_PLANS if p['name'] == payment['plan_name']),
-                30,
-            )
-            renew = db.get_latest_xui_subscription(
-                callback.from_user.id, str(payment["server_id"])
-            )
-            outcome = await provision_after_payment(
-                telegram_user_id=callback.from_user.id,
-                server_id=str(payment["server_id"]),
-                duration_days=duration_days,
-                renew_row=renew,
-            )
-            if outcome.ok and outcome.config_data:
-                if (
-                    outcome.was_renewal
-                    and outcome.subscription_db_id is not None
-                    and outcome.end_date_for_db is not None
-                ):
-                    db.update_subscription_renewal(
-                        outcome.subscription_db_id,
-                        outcome.config_data,
-                        outcome.end_date_for_db,
-                    )
-                elif not outcome.was_renewal:
-                    db.add_subscription(
-                        callback.from_user.id,
-                        payment["server_id"],
-                        outcome.config_data,
-                        duration_days,
-                        xui_client_email=outcome.xui_email,
-                        xui_client_uuid=outcome.xui_client_uuid,
-                        xui_sub_id=outcome.xui_sub_id,
-                        xui_inbound_id=outcome.xui_inbound_id,
-                    )
-                else:
-                    logger.error(
-                        "Продление без subscription_db_id/end_date, БД не обновлена"
-                    )
-
-            await callback.message.edit_text(
-                "✅ Оплата подтверждена!\n\n" + outcome.user_message
-            )
-            await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard())
-            await callback.answer()
-            return
-    
-    await callback.answer("❌ ЮMoney недоступен", show_alert=True)
+        await callback.message.edit_text(
+            "✅ Оплата подтверждена!\n\n" + outcome.user_message,
+            disable_web_page_preview=True,
+        )
+        await callback.message.answer(
+            "Главное меню:", reply_markup=get_main_keyboard()
+        )
+    except Exception:
+        logger.exception("Ошибка в check_payment для payment_id=%s", payment_id)
+        await callback.message.answer(
+            "❌ Ошибка при проверке оплаты или выдаче подписки. "
+            "Если деньги списались — напишите в поддержку: @MXMKGN"
+        )
 
 @dp.callback_query(F.data.startswith("pay_stars_"))
 async def process_stars_payment(callback: CallbackQuery, state: FSMContext):

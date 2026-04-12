@@ -1,15 +1,41 @@
 # yoomoney_payment.py
 import logging
-import asyncio
-from yoomoney import Client, Quickpay
+from yoomoney import AsyncClient, Quickpay
 
 logger = logging.getLogger(__name__)
+
+
+def _match_labeled_operation(
+    operations, label: str, expected_amount: int | None
+) -> dict | None:
+    """Возвращает dict со статусом или None, если подходящей операции нет."""
+    for operation in operations:
+        op_label = (operation.label or "").strip()
+        if op_label != label:
+            continue
+        if expected_amount is not None and operation.amount is not None:
+            received = int(round(float(operation.amount)))
+            if received < int(expected_amount):
+                continue
+        op_status = (operation.status or "").strip().lower()
+        if op_status == "success":
+            return {
+                "success": True,
+                "status": "completed",
+                "amount": operation.amount,
+            }
+        return {
+            "success": True,
+            "status": "pending",
+        }
+    return None
+
 
 class YooMoneyPayment:
     def __init__(self, token: str, wallet: str):
         self.token = token
         self.wallet = wallet
-        self.client = Client(token)
+        self._client = AsyncClient(token)
     
     async def create_payment(self, amount: int, description: str, payment_id: str) -> dict:
         """Создает платеж через Юмани"""
@@ -39,39 +65,36 @@ class YooMoneyPayment:
                 'error': str(e)
             }
     
-    async def check_payment_status(self, payment_id: str) -> dict:
-        """Проверяет статус платежа"""
+    async def check_payment_status(
+        self, payment_id: str, *, expected_amount: int | None = None
+    ) -> dict:
+        """Проверяет статус входящего платежа по label (Quickpay)."""
+        label = (payment_id or "").strip()
         try:
-            # Получаем историю операций
-            history = self.client.operation_history(label=payment_id)
-            
-            for operation in history.operations:
-                if operation.label == payment_id:
-                    if operation.status == 'success':
-                        return {
-                            'success': True,
-                            'status': 'completed',
-                            'amount': operation.amount,
-                            'payment_id': payment_id
-                        }
-                    else:
-                        return {
-                            'success': True,
-                            'status': 'pending',
-                            'payment_id': payment_id
-                        }
-            
+            # Сначала только входящие; при пустом ответе — без фильтра type (разные сценарии Quickpay).
+            for kwargs in (
+                {"label": label, "type": "deposition", "records": 50, "details": True},
+                {"label": label, "records": 50, "details": True},
+            ):
+                history = await self._client.operation_history(**kwargs)
+                matched = _match_labeled_operation(
+                    history.operations, label, expected_amount
+                )
+                if matched is not None:
+                    matched["payment_id"] = payment_id
+                    return matched
+
             return {
-                'success': True,
-                'status': 'not_found',
-                'payment_id': payment_id
+                "success": True,
+                "status": "not_found",
+                "payment_id": payment_id,
             }
-            
+
         except Exception as e:
-            logger.error(f"Ошибка проверки статуса платежа: {e}")
+            logger.error("Ошибка проверки статуса платежа: %s", e)
             return {
-                'success': False,
-                'error': str(e)
+                "success": False,
+                "error": str(e),
             }
 
 # Глобальный экземпляр
