@@ -685,6 +685,7 @@ PersistentKeepalive = 25
 # Запуск бота
 async def main():
     logger.info("Запуск бота...")
+    config.check_config()
     yoomoney_payment.init_yoomoney()
     await dp.start_polling(bot)
 

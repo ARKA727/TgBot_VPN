@@ -3,6 +3,7 @@
 import os
 import logging
 from pathlib import Path
+from typing import Any, Optional, TypedDict
 
 try:
     from dotenv import load_dotenv
@@ -39,6 +40,26 @@ _EE_VPN_HOST = os.getenv("EE_VPN_ENDPOINT_HOST", "replace-with-your-vless-host.e
 _XUI_EE_INBOUND_RAW = os.getenv("XUI_EE_INBOUND_ID", "").strip()
 _XUI_EE_INBOUND_ID = int(_XUI_EE_INBOUND_RAW) if _XUI_EE_INBOUND_RAW.isdigit() else None
 
+# HTTP к панели (этап 1 / дальше — API-клиент)
+XUI_REQUEST_TIMEOUT = int(os.getenv("XUI_REQUEST_TIMEOUT", "30"))
+# Для панели по IP с самоподписанным сертификатом: XUI_EE_VERIFY_SSL=false
+_XUI_EE_VERIFY_RAW = os.getenv("XUI_EE_VERIFY_SSL", "true").strip().lower()
+XUI_EE_VERIFY_SSL = _XUI_EE_VERIFY_RAW not in ("0", "false", "no", "off")
+
+
+class XuiPanelConfig(TypedDict):
+    """Параметры для входа в API 3x-ui (не логировать password целиком)."""
+
+    server_id: str
+    panel_base_url: str
+    inbound_id: int
+    username: str
+    password: str
+    verify_ssl: bool
+    request_timeout: int
+    vpn_endpoint_host: str
+
+
 VPN_SERVERS = [
     {
         "name": "🇪🇪 Эстония",
@@ -51,6 +72,80 @@ VPN_SERVERS = [
         "inbound_id": _XUI_EE_INBOUND_ID,
     },
 ]
+
+
+def get_server_by_id(server_id: str) -> Optional[dict[str, Any]]:
+    sid = (server_id or "").strip().lower()
+    for row in VPN_SERVERS:
+        if row.get("id") == sid:
+            return row
+    return None
+
+
+def get_xui_panel_config(server_id: str) -> Optional[XuiPanelConfig]:
+    """
+    Полная привязка бота к панели 3x-ui для локации.
+    Возвращает None, если не хватает URL, inbound, логина или пароля.
+    Учётные данные только из .env (не кладём пароль в VPN_SERVERS).
+    """
+    row = get_server_by_id(server_id)
+    if not row:
+        return None
+
+    sid = str(row["id"])
+    base = (row.get("panel_base_url") or "").strip().rstrip("/")
+    inbound = row.get("inbound_id")
+    if not base or not isinstance(inbound, int):
+        return None
+
+    if sid == "ee":
+        username = os.getenv("XUI_EE_USERNAME", "").strip()
+        password = os.getenv("XUI_EE_PASSWORD", "")
+    else:
+        username = ""
+        password = ""
+
+    if not username or not password:
+        return None
+
+    verify = XUI_EE_VERIFY_SSL if sid == "ee" else True
+
+    return XuiPanelConfig(
+        server_id=sid,
+        panel_base_url=base,
+        inbound_id=inbound,
+        username=username,
+        password=password,
+        verify_ssl=verify,
+        request_timeout=XUI_REQUEST_TIMEOUT,
+        vpn_endpoint_host=str(row.get("ip") or "").strip(),
+    )
+
+
+def xui_config_status(server_id: str) -> dict[str, Any]:
+    """Диагностика без секретов (для логов / админки)."""
+    row = get_server_by_id(server_id)
+    if not row:
+        return {"ok": False, "reason": "unknown_server_id"}
+    base = (row.get("panel_base_url") or "").strip()
+    inbound = row.get("inbound_id")
+    if not base:
+        return {"ok": False, "reason": "panel_base_url_empty"}
+    if not isinstance(inbound, int):
+        return {"ok": False, "reason": "inbound_id_missing_or_invalid"}
+    cfg = get_xui_panel_config(server_id)
+    if not cfg:
+        return {"ok": False, "reason": "credentials_missing"}
+    return {
+        "ok": True,
+        "server_id": cfg["server_id"],
+        "panel_base_url": cfg["panel_base_url"],
+        "inbound_id": cfg["inbound_id"],
+        "verify_ssl": cfg["verify_ssl"],
+        "request_timeout": cfg["request_timeout"],
+        "vpn_endpoint_host": cfg["vpn_endpoint_host"],
+    }
+
 
 # Тарифные планы
 VPN_PLANS = [
@@ -105,5 +200,23 @@ def check_config():
         logger.info("✅ Юмани токен установлен")
     else:
         logger.warning("⚠️ Юмани токен не установлен - оплата через Юмани недоступна")
+
+    for s in VPN_SERVERS:
+        sid = s.get("id", "")
+        st = xui_config_status(str(sid))
+        if st.get("ok"):
+            logger.info(
+                "✅ 3x-ui (%s): панель %s, inbound=%s, SSL verify=%s",
+                sid,
+                st["panel_base_url"],
+                st["inbound_id"],
+                st["verify_ssl"],
+            )
+        else:
+            logger.warning(
+                "⚠️ 3x-ui (%s): не готово к API — %s",
+                sid,
+                st.get("reason", "unknown"),
+            )
     
     return True
