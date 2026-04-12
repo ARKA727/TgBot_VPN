@@ -73,6 +73,26 @@ def get_plan_keyboard(server_id: str):
     builder.adjust(1)
     return builder.as_markup()
 
+def _payment_created_at(row) -> datetime | None:
+    """Дата создания записи payments (для окна поиска в истории ЮMoney)."""
+    raw = row["created_at"] if row is not None else None
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace(" ", "T")[:26])
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
 def get_payment_method_keyboard(server_id: str, duration: int, price_stars: int, price_rub: int, plan_name: str):
     """Клавиатура выбора способа оплаты"""
     builder = InlineKeyboardBuilder()
@@ -375,8 +395,11 @@ async def check_payment(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
     try:
+        created_at = _payment_created_at(payment)
         status = await yoomoney_payment.yoomoney.check_payment_status(
-            payment_id, expected_amount=int(payment["amount"])
+            payment_id,
+            expected_amount=int(payment["amount"]),
+            created_at=created_at,
         )
 
         if not status.get("success"):
@@ -388,10 +411,25 @@ async def check_payment(callback: CallbackQuery, state: FSMContext):
 
         st = status.get("status")
         if st == "not_found":
-            await callback.message.answer(
-                "⏳ Платёж пока не виден в кошельке. Убедитесь, что оплатили по ссылке из "
-                "этого сообщения, подождите до минуты и снова нажмите «Проверить оплату»."
+            age = (
+                (datetime.now() - created_at).total_seconds()
+                if created_at is not None
+                else None
             )
+            if age is not None and age > 3600:
+                await callback.message.answer(
+                    "❌ По этому заказу в истории кошелька не найдено входящего платежа с нужной "
+                    "меткой (label), хотя с момента создания ссылки прошло больше часа.\n\n"
+                    "Проверьте: оплата шла именно по ссылке из этого чата (не вручную на кошелёк), "
+                    "сумма не меньше указанной в заказе, кошелёк получателя совпадает с настройкой бота.\n"
+                    "Если всё верно — напишите в поддержку: @MXMKGN (укажите время оплаты и последние цифры суммы)."
+                )
+            else:
+                await callback.message.answer(
+                    "⏳ Платёж пока не виден в истории кошелька. Обычно поступление по карте отображается "
+                    "до нескольких минут. Убедитесь, что оплатили по ссылке из этого сообщения, "
+                    "подождите и снова нажмите «Проверить оплату»."
+                )
             return
 
         if st == "pending":

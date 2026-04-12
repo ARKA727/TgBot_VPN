@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime, timedelta
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -120,7 +121,9 @@ def _match_labeled_operation(
             continue
         if expected_amount is not None and operation.amount is not None:
             received = int(round(float(operation.amount)))
-            if received < int(expected_amount):
+            exp = int(expected_amount)
+            # Допуск −1 ₽ из‑за округлений/комиссий отображения в истории.
+            if received < exp - 1:
                 continue
         op_status = (operation.status or "").strip().lower()
         if op_status == "success":
@@ -129,6 +132,8 @@ def _match_labeled_operation(
                 "status": "completed",
                 "amount": operation.amount,
             }
+        if op_status == "refused":
+            continue
         return {
             "success": True,
             "status": "pending",
@@ -146,6 +151,13 @@ class YooMoneyPayment:
         Запрос operation-history: httpx (HTTP/1.1), при «ломаных» ответах — urllib в потоке.
         """
         payload = build_history_payload(**history_kwargs)
+        # Библиотечный format_datetime без ведущих нулей — ЮMoney ожидает ISO-подобную строку.
+        fd = history_kwargs.get("from_date")
+        if isinstance(fd, datetime):
+            payload["from"] = fd.strftime("%Y-%m-%dT%H:%M:%S")
+        td = history_kwargs.get("till_date")
+        if isinstance(td, datetime):
+            payload["till"] = td.strftime("%Y-%m-%dT%H:%M:%S")
         form = _form_values_str(payload or {})
         headers = {
             **_WALLET_HEADERS,
@@ -243,14 +255,23 @@ class YooMoneyPayment:
             }
 
     async def check_payment_status(
-        self, payment_id: str, *, expected_amount: int | None = None
+        self,
+        payment_id: str,
+        *,
+        expected_amount: int | None = None,
+        created_at: datetime | None = None,
     ) -> dict:
-        """Проверяет статус входящего платежа по label (Quickpay)."""
+        """
+        Проверяет платёж Quickpay по label.
+        Сначала запрос с фильтром label (как в API); если пусто — просмотр истории
+        с даты создания заказа и поиск операции с тем же label в списке (иногда
+        фильтр label в operation-history не отдаёт входящие с карты).
+        """
         label = (payment_id or "").strip()
         try:
             for kwargs in (
-                {"label": label, "type": "deposition", "records": 50},
-                {"label": label, "records": 50},
+                {"label": label, "type": "deposition", "records": 100},
+                {"label": label, "records": 100},
             ):
                 history = await self._post_operation_history(**kwargs)
                 matched = _match_labeled_operation(
@@ -259,6 +280,27 @@ class YooMoneyPayment:
                 if matched is not None:
                     matched["payment_id"] = payment_id
                     return matched
+
+            if created_at is not None:
+                window_start = created_at - timedelta(days=1)
+                start_record: str | None = None
+                for _ in range(15):
+                    page_kw: dict[str, Any] = {
+                        "from_date": window_start,
+                        "records": 100,
+                    }
+                    if start_record is not None:
+                        page_kw["start_record"] = str(start_record)
+                    history = await self._post_operation_history(**page_kw)
+                    matched = _match_labeled_operation(
+                        history.operations, label, expected_amount
+                    )
+                    if matched is not None:
+                        matched["payment_id"] = payment_id
+                        return matched
+                    start_record = history.next_record
+                    if not start_record:
+                        break
 
             return {
                 "success": True,
