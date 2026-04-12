@@ -69,7 +69,8 @@ async def provision_after_payment(
 ) -> ProvisionOutcome:
     """
     Создаёт клиента в панели или продлевает существующего (если передан renew_row из БД).
-    Срок продления: max(сейчас, текущий срок в панели) + купленные дни.
+    renew_row обычно последняя запись с xui_client_uuid (в т.ч. истёкшая в БД).
+    Срок в панели: max(сейчас, текущий expiry) + купленные дни.
     """
     sid = (server_id or "").strip().lower()
     cfg = config.get_xui_panel_config(sid)

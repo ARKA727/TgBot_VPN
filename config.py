@@ -40,6 +40,9 @@ _EE_VPN_HOST = os.getenv("EE_VPN_ENDPOINT_HOST", "replace-with-your-vless-host.e
 _XUI_EE_INBOUND_RAW = os.getenv("XUI_EE_INBOUND_ID", "").strip()
 _XUI_EE_INBOUND_ID = int(_XUI_EE_INBOUND_RAW) if _XUI_EE_INBOUND_RAW.isdigit() else None
 
+# Период проверки истёкших подписок в БД (секунды), фоновая задача бота
+SUBSCRIPTION_EXPIRE_CHECK_SECONDS = int(os.getenv("SUBSCRIPTION_EXPIRE_CHECK_SECONDS", "3600"))
+
 # HTTP к панели (этап 1 / дальше — API-клиент)
 XUI_REQUEST_TIMEOUT = int(os.getenv("XUI_REQUEST_TIMEOUT", "30"))
 # Для панели по IP с самоподписанным сертификатом: XUI_EE_VERIFY_SSL=false

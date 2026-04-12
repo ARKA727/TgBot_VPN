@@ -181,7 +181,7 @@ async def show_help(message: Message):
         "После оплаты бот выдаст данные подписки (VLESS через 3x-ui).\n",
         "Импортируй ссылку в v2rayNG, Hiddify, Streisand и т.п.\n\n",
         "❓ Повторная покупка на тот же сервер?\n",
-        "Срок продлевается у того же ключа (в панели 3x-ui и в «Мои подписки»).\n\n",
+        "Срок продлевается у того же ключа (в панели 3x-ui и в «Мои подписки»), в том числе если срок в боте уже истёк.\n\n",
         "❓ Почему VPN иногда отключается в Шортсах (Youtube/insta)?\n"
         "Это связанно с Принципами работы протокла Velness. В этом нет ничего критичного. С большим кол-вом подписчиков будет добавленны новые протоколы.\n\n"
         
@@ -396,7 +396,7 @@ async def check_payment(callback: CallbackQuery, state: FSMContext):
                 (p['duration'] for p in config.VPN_PLANS if p['name'] == payment['plan_name']),
                 30,
             )
-            renew = db.get_active_xui_subscription(
+            renew = db.get_latest_xui_subscription(
                 callback.from_user.id, str(payment["server_id"])
             )
             outcome = await provision_after_payment(
@@ -497,7 +497,7 @@ async def process_successful_payment(message: Message, state: FSMContext):
     )
     db.update_payment_status(payment_id, "completed")
 
-    renew = db.get_active_xui_subscription(user_id, server_id)
+    renew = db.get_latest_xui_subscription(user_id, server_id)
     outcome = await provision_after_payment(
         telegram_user_id=user_id,
         server_id=server_id,
@@ -584,11 +584,31 @@ async def back_to_plans(callback: CallbackQuery):
     )
     await callback.answer()
 
+async def _subscription_expire_loop():
+    """Периодически помечает истёкшие подписки в SQLite (is_active=0)."""
+    interval = max(60, int(getattr(config, "SUBSCRIPTION_EXPIRE_CHECK_SECONDS", 3600)))
+    while True:
+        try:
+            n = db.deactivate_expired_subscriptions()
+            if n:
+                logger.info("Истёкшие подписки помечены неактивными: %s шт.", n)
+        except Exception:
+            logger.exception("Ошибка в _subscription_expire_loop")
+        await asyncio.sleep(interval)
+
+
 # Запуск бота
 async def main():
     logger.info("Запуск бота...")
     config.check_config()
     yoomoney_payment.init_yoomoney()
+    try:
+        n = db.deactivate_expired_subscriptions()
+        if n:
+            logger.info("При старте деактивировано истёкших подписок: %s", n)
+    except Exception:
+        logger.exception("deactivate_expired_subscriptions при старте")
+    asyncio.create_task(_subscription_expire_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
